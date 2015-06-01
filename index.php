@@ -22,6 +22,11 @@
 require __DIR__.'/vendor/autoload.php';
 $app = new \Slim\Slim();
  
+error_reporting(E_ALL);
+ini_set("display_errors", 1);
+ini_set("memory_limit", "1024M");
+ini_set('max_execution_time', 0); //300 seconds = 5 minutes
+ 
 /**
  * Step 3: Define the Slim application routes
  *
@@ -131,25 +136,28 @@ EOT;
         echo $template;
     }
 );
+ 
+header('Access-Control-Allow-Origin: *');
 if (isset($_SERVER['HTTP_ORIGIN'])) {
-        header("Access-Control-Allow-Origin: {$_SERVER['HTTP_ORIGIN']}");
+        //header('Access-Control-Allow-Origin: *');
         header('Access-Control-Allow-Credentials: true');
         header('Access-Control-Max-Age: 86400');    // cache for 1 day
     }
     // Access-Control headers are received during OPTIONS requests
     if ($_SERVER['REQUEST_METHOD'] == 'OPTIONS') {
-
+ 
         if (isset($_SERVER['HTTP_ACCESS_CONTROL_REQUEST_METHOD']))
-            header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");         
-
+            header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");        
+ 
         if (isset($_SERVER['HTTP_ACCESS_CONTROL_REQUEST_HEADERS']))
             header("Access-Control-Allow-Headers: {$_SERVER['HTTP_ACCESS_CONTROL_REQUEST_HEADERS']}");
-
+ 
     }
-
+ 
     $app->map('/:x+', function($x) {
     http_response_code(200);
 })->via('OPTIONS');
+ 
  
 // POST route
 $app->post(
@@ -172,15 +180,33 @@ $app->get('/hello/:name', function ($name) {
 });
 function array_has_dupes($array) {
    // streamline per @Felix
-   return count($array) !== count(array_unique($array));
+   $newarray = array();
+   foreach($array as $entry) {
+           if(!is_null($entry)) $newarray[] = $entry;
+   }
+   return count($newarray) !== count(array_unique($newarray));
 }
-function generate($array) {
+ 
+function get_slots_array($count) {
+        $slots = array();
+        for($i = 0; $i < 6; $i++) {
+                $slots[] = array_fill(0, $count, NULL);
+        }
+        return $slots; 
+}
+ 
+function generate($array, $groups) {
         //$proffesors = array("Klysh", "lila");
         //$groups = array("ap", "s");
         //$courses = array("prog", "asd");
         //$auditories = array("403", "404", "500", "406", "700");
         $classes = $array;
-        $schedule = array(
+        $schedule = array();
+        for($i = 0; $i < 5; $i++) {
+                $schedule[] = get_slots_array(count($groups));
+        }
+        /*
+$schedule = array(
         "monday" => array(
                 0 => array(
                 0 => NULL, 1 => NULL),
@@ -248,6 +274,7 @@ function generate($array) {
                 0 => NULL, 1 => NULL))
         );
         $schedule = array_values($schedule);
+*/
         foreach ($classes as $c) {
                 $day = rand(0,4);
                 $pair = rand(0,5);
@@ -262,56 +289,263 @@ function generate($array) {
         return $schedule;
 }
  
-$app->post('/api/generate/', function () {
+function filter_schedule($groups, $filtered) {
+        $result = array();
+        foreach($groups as $group) {
+                $schedule = array();
+                for($i = 0; $i < 5; $i++) {
+                        $day = array();
+                    for($j = 0; $j < 6; $j++) {
+                                $pair = null;
+                                $current_pair = $filtered[$i][$j];
+                                foreach($current_pair as $slot) {
+                                        if($slot['group'] == $group) {
+                                                $pair = $slot;
+                                        }
+                                }
+                                $day[] = $pair;    
+                    }
+                    $schedule[] = $day;
+                }
+                $result[] = $schedule;
+        }
+    return $result;
+}
+ 
+$app->get('/api/generate/', function () {
         $app = \Slim\Slim::getInstance();
-        $paramValue = $app->request()->getBody();
-        $array = json_decode($paramValue, true);
+        //$paramValue = $app->request()->getBody();
+        $paramValue = $app->request()->get('data');
+        $source = json_decode($paramValue, true);
+        $array = $source['data'];
+        $groups = $source['groups'];
         $schedules = array();
         $scores = array();
         $min = 99999999; $max = 0;
+        $imin = 0; $imax = 0;
         for ($i = 0; $i < 10000; $i++) {
-                $schedules[$i] = generate($array);
+                                $generated = generate($array, $groups);
+                                $failed = false;
                 $score = 0;
-                foreach($schedules[$i] as $day){
+                foreach($generated as $day){
                         foreach($day as $pair){
+                                        //print_r($pair);
                                 $pair_map_professors = array_map(function($element){
                                         return $element["professor"];
                                 }, $pair);
+                                //echo "PROF:";
+                                //print_r($pair_map_professors);
                                 $pair_map_groups = array_map(function($element){
                                         return $element["group"];
                                 }, $pair);
                                 $pair_map_rooms = array_map(function($element){
                                         return $element["room"];
                                 }, $pair);
-                                if(!array_has_dupes($pair_map_professors)){
-                                        //если профессор не повторяется
-                                        $score++;
+                                if(array_has_dupes($pair_map_professors)){
+                                        $failed = true;
                                 }
-                                if(!array_has_dupes($pair_map_groups)){
-                                        //если группа не повторяется
-                                        $score++;
+                                if(array_has_dupes($pair_map_groups)){
+                                        $failed = true;
                                 }
-                                if(!array_has_dupes($pair_map_rooms)){
-                                        //если куоманта не повторяется
-                                        $score++;
+                                if(array_has_dupes($pair_map_rooms)){
+                                        $failed = true;
+                                }
+                                //break;
+                        }
+                        //break;
+                }
+               
+                if(!$failed) {
+                        $generated = filter_schedule($groups, $generated);
+                        $schedules[] = $generated;
+                       
+                        // calculating density score
+                       
+                                        foreach($generated as $groupsch) {
+                                for($a = 0; $a < 5; $a++) {
+                                        $started = false; $breaks = false;
+                                       
+                                        /*
+if(!array_filter($groupsch[$a])) {
+                                                $score++;
+                                                        }
+*/
+                                                        $pairCount = 0;
+                                        for($b = 0; $b < 6; $b++) {
+                                                if(!is_null($groupsch[$a][$b])) {
+                                                        $pairCount++;          
+                                                }      
+                                        }
+                                       
+                                        for($b = 0; $b < 6; $b++) {
+                                                if(is_null($groupsch[$a][$b]) && !$started) {
+                                                        $started = true;
+                                                        continue;
+                                                }              
+                                               
+                                                if(is_null($groupsch[$a][$b]) && $started) {
+                                                        if($b == 5) break;
+                                                       
+                                                        $hasPairs = false;
+                                                        for($c = $b + 1; $c < 6; $c++) {
+                                                                if(!is_null($groupsch[$a][$c])) $hasPairs = true;      
+                                                        }
+                                                       
+                                                        if($hasPairs) {
+                                                                $breaks = true;
+                                                        }
+                                                       
+                                                        break;
+                                                }
+                                        }
+                                       
+                                        if(!$breaks) $score++;
+                                        if($pairCount != 1) $score++;
                                 }
                         }
-                }
-                $scores[$i] = $score;
-                if ($score <= $min)
-                {
-                        $min = $score;
-                        $imin = $i;
-                }
-                if ($score > $max)
-                {
-                        $max = $score;
-                        $imax = $i;
-                }
+               
+                        $index = count($schedules) - 1;
+                       
+                        $scores[$index] = $score;
+                        //echo $i." ".$score."\n";
+                        if ($score <= $min)
+                        {
+                                $min = $score;
+                                $imin = $index;
+                        }
+                        if ($score > $max)
+                        {
+                                $max = $score;
+                                $imax = $index;
+                        }
+                   }
         }
         $res = $app->response;
         $res->setStatus(200);
+        //echo $max." ".$imax;
+        //$resultSchedule = filter_schedule($groups, $schedules[$imax]);
+        //echo $max;
         $res->setBody(json_encode($schedules[$imax]));
+        //$res->headers->set('Access-Control-Allow-Origin', '*');
+        $res->headers['Content-Type'] = 'application/json';
+        $res->finalize();
+});
+ 
+$app->post('/api/generate/', function () {
+        $app = \Slim\Slim::getInstance();
+        $paramValue = $app->request()->getBody();
+        //$paramValue = $app->request()->get('data');
+        $source = json_decode($paramValue, true);
+        $array = $source['data'];
+        $groups = $source['groups'];
+        $schedules = array();
+        $scores = array();
+        $min = 99999999; $max = 0;
+        $imin = 0; $imax = 0;
+        for ($i = 0; $i < 10000; $i++) {
+                                $generated = generate($array, $groups);
+                                $failed = false;
+                $score = 0;
+                foreach($generated as $day){
+                        foreach($day as $pair){
+                                        //print_r($pair);
+                                $pair_map_professors = array_map(function($element){
+                                        return $element["professor"];
+                                }, $pair);
+                                //echo "PROF:";
+                                //print_r($pair_map_professors);
+                                $pair_map_groups = array_map(function($element){
+                                        return $element["group"];
+                                }, $pair);
+                                $pair_map_rooms = array_map(function($element){
+                                        return $element["room"];
+                                }, $pair);
+                                if(array_has_dupes($pair_map_professors)){
+                                        $failed = true;
+                                }
+                                if(array_has_dupes($pair_map_groups)){
+                                        $failed = true;
+                                }
+                                if(array_has_dupes($pair_map_rooms)){
+                                        $failed = true;
+                                }
+                                //break;
+                        }
+                        //break;
+                }
+               
+                if(!$failed) {
+                        $generated = filter_schedule($groups, $generated);
+                        $schedules[] = $generated;
+                       
+                        // calculating density score
+                       
+                                        foreach($generated as $groupsch) {
+                                for($a = 0; $a < 5; $a++) {
+                                        $started = false; $breaks = false;
+                                       
+                                        /*
+if(!array_filter($groupsch[$a])) {
+                                                $score++;
+                                                        }
+*/
+                                                        $pairCount = 0;
+                                        for($b = 0; $b < 6; $b++) {
+                                                if(!is_null($groupsch[$a][$b])) {
+                                                        $pairCount++;          
+                                                }      
+                                        }
+                                       
+                                        for($b = 0; $b < 6; $b++) {
+                                                if(is_null($groupsch[$a][$b]) && !$started) {
+                                                        $started = true;
+                                                        continue;
+                                                }              
+                                               
+                                                if(is_null($groupsch[$a][$b]) && $started) {
+                                                        if($b == 5) break;
+                                                       
+                                                        $hasPairs = false;
+                                                        for($c = $b + 1; $c < 6; $c++) {
+                                                                if(!is_null($groupsch[$a][$c])) $hasPairs = true;      
+                                                        }
+                                                       
+                                                        if($hasPairs) {
+                                                                $breaks = true;
+                                                        }
+                                                       
+                                                        break;
+                                                }
+                                        }
+                                       
+                                        if(!$breaks) $score++;
+                                        if($pairCount != 1) $score++;
+                                }
+                        }
+               
+                        $index = count($schedules) - 1;
+                       
+                        $scores[$index] = $score;
+                        //echo $i." ".$score."\n";
+                        if ($score <= $min)
+                        {
+                                $min = $score;
+                                $imin = $index;
+                        }
+                        if ($score > $max)
+                        {
+                                $max = $score;
+                                $imax = $index;
+                        }
+                   }
+        }
+        $res = $app->response;
+        $res->setStatus(200);
+        //echo $max." ".$imax;
+        //$resultSchedule = filter_schedule($groups, $schedules[$imax]);
+        //echo $max;
+        $res->setBody(json_encode($schedules[$imax]));
+        //$res->headers->set('Access-Control-Allow-Origin', '*');
         $res->headers['Content-Type'] = 'application/json';
         $res->finalize();
 });
